@@ -3,6 +3,10 @@ import * as path from "path";
 import { writeFile as writeFilePromise } from "fs/promises";
 import { ToolResult, EditorCommand } from "../types/index.js";
 import { ConfirmationService } from "../utils/confirmation-service.js";
+import { createRequire } from "module";
+
+const require = createRequire(import.meta.url);
+const debug = require("debug")("grok-cli:editor");
 
 export class TextEditorTool {
   private editHistory: EditorCommand[] = [];
@@ -12,6 +16,7 @@ export class TextEditorTool {
     filePath: string,
     viewRange?: [number, number]
   ): Promise<ToolResult> {
+    debug(`[VIEW] ${filePath}${viewRange ? ` lines ${viewRange[0]}-${viewRange[1]}` : ''}`);
     try {
       const resolvedPath = path.resolve(filePath);
 
@@ -74,6 +79,7 @@ export class TextEditorTool {
     newStr: string,
     replaceAll: boolean = false
   ): Promise<ToolResult> {
+    debug(`[STR_REPLACE] ${filePath} replaceAll=${replaceAll} old=${oldStr.length}chars new=${newStr.length}chars`);
     try {
       const resolvedPath = path.resolve(filePath);
 
@@ -88,10 +94,13 @@ export class TextEditorTool {
 
       if (!content.includes(oldStr)) {
         if (oldStr.includes('\n')) {
+          debug(`[STR_REPLACE] Exact match failed, attempting fuzzy match for multi-line string`);
           const fuzzyResult = this.findFuzzyMatch(content, oldStr);
           if (fuzzyResult) {
+            debug(`[STR_REPLACE] Fuzzy match succeeded`);
             oldStr = fuzzyResult;
           } else {
+            debug(`[STR_REPLACE] Fuzzy match also failed`);
             return {
               success: false,
               error: `String not found in file. For multi-line replacements, consider using line-based editing.`,
@@ -164,6 +173,7 @@ export class TextEditorTool {
   }
 
   async create(filePath: string, content: string): Promise<ToolResult> {
+    debug(`[CREATE] ${filePath} content=${content.length}chars`);
     try {
       const resolvedPath = path.resolve(filePath);
 

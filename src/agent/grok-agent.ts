@@ -1,7 +1,5 @@
 import { GrokClient, GrokMessage, GrokToolCall } from "../grok/client.js";
 import {
-  GROK_TOOLS,
-  addMCPToolsToGrokTools,
   getAllGrokTools,
   getMCPManager,
   initializeMCPServers,
@@ -20,6 +18,10 @@ import { EventEmitter } from "events";
 import { createTokenCounter, TokenCounter } from "../utils/token-counter.js";
 import { loadCustomInstructions } from "../utils/custom-instructions.js";
 import { getSettingsManager } from "../utils/settings-manager.js";
+import { createRequire } from "module";
+
+const require = createRequire(import.meta.url);
+const debug = require("debug")("grok-cli");
 
 export interface ChatEntry {
   type: "user" | "assistant" | "tool_result" | "tool_call";
@@ -29,6 +31,7 @@ export interface ChatEntry {
   toolCall?: GrokToolCall;
   toolResult?: { success: boolean; output?: string; error?: string };
   isStreaming?: boolean;
+  tokenCount?: number;
 }
 
 export interface StreamingChunk {
@@ -84,6 +87,8 @@ export class GrokAgent extends EventEmitter {
       ? `\n\nCUSTOM INSTRUCTIONS:\n${customInstructions}\n\nThe above custom instructions should be followed alongside the standard instructions below.`
       : "";
 
+    debug(`[LIFECYCLE] GrokAgent initialized with model: ${modelToUse}, maxToolRounds: ${this.maxToolRounds}`);
+
     // Initialize with system message
     this.messages.push({
       role: "system",
@@ -101,9 +106,6 @@ You have access to these tools:
 - search: Unified search tool for finding text content or files (similar to Cursor's search functionality)
 - create_todo_list: Create a visual todo list for planning and tracking tasks
 - update_todo_list: Update existing todos in your todo list
-
-REAL-TIME INFORMATION:
-You have access to real-time web search and X (Twitter) data. When users ask for current information, latest news, or recent events, you automatically have access to up-to-date information from the web and social media.
 
 IMPORTANT TOOL USAGE RULES:
 - NEVER use create_file on files that already exist - this will overwrite them completely
@@ -167,40 +169,9 @@ Current working directory: ${process.cwd()}`,
     });
   }
 
-  private isGrokModel(): boolean {
-    const currentModel = this.grokClient.getCurrentModel();
-    return currentModel.toLowerCase().includes("grok");
-  }
-
-  // Heuristic: enable web search only when likely needed
-  private shouldUseSearchFor(message: string): boolean {
-    const q = message.toLowerCase();
-    const keywords = [
-      "today",
-      "latest",
-      "news",
-      "trending",
-      "breaking",
-      "current",
-      "now",
-      "recent",
-      "x.com",
-      "twitter",
-      "tweet",
-      "what happened",
-      "as of",
-      "update on",
-      "release notes",
-      "changelog",
-      "price",
-    ];
-    if (keywords.some((k) => q.includes(k))) return true;
-    // crude date pattern (e.g., 2024/2025) may imply recency
-    if (/(20\d{2})/.test(q)) return true;
-    return false;
-  }
-
   async processUserMessage(message: string): Promise<ChatEntry[]> {
+    debug(`[LIFECYCLE] Starting processUserMessage with message: ${message.substring(0, 100)}${message.length > 100 ? '...' : ''}`);
+
     // Add user message to conversation
     const userEntry: ChatEntry = {
       type: "user",
@@ -216,14 +187,12 @@ Current working directory: ${process.cwd()}`,
 
     try {
       const tools = await getAllGrokTools();
+      debug(`[LLM] Calling grokClient.chat with ${this.messages.length} messages, ${tools.length} tools available`);
       let currentResponse = await this.grokClient.chat(
         this.messages,
-        tools,
-        undefined,
-        this.isGrokModel() && this.shouldUseSearchFor(message)
-          ? { search_parameters: { mode: "auto" } }
-          : { search_parameters: { mode: "off" } }
+        tools
       );
+      debug(`[LLM] grokClient.chat completed, response has ${currentResponse.choices[0]?.message?.tool_calls?.length || 0} tool calls`);
 
       // Agent loop - continue until no more tool calls or max rounds reached
       while (toolRounds < maxToolRounds) {
@@ -280,13 +249,16 @@ Current working directory: ${process.cwd()}`,
             );
 
             if (entryIndex !== -1) {
+              const content = result.success
+                ? result.output || "Success"
+                : result.error || "Error occurred";
+
               const updatedEntry: ChatEntry = {
                 ...this.chatHistory[entryIndex],
                 type: "tool_result",
-                content: result.success
-                  ? result.output || "Success"
-                  : result.error || "Error occurred",
+                content: content,
                 toolResult: result,
+                tokenCount: this.tokenCounter.countTokens(content),
               };
               this.chatHistory[entryIndex] = updatedEntry;
 
@@ -312,13 +284,10 @@ Current working directory: ${process.cwd()}`,
           }
 
           // Get next response - this might contain more tool calls
+          debug(`[LLM] Calling grokClient.chat for round ${toolRounds + 1} with ${this.messages.length} messages after tool execution`);
           currentResponse = await this.grokClient.chat(
             this.messages,
-            tools,
-            undefined,
-            this.isGrokModel() && this.shouldUseSearchFor(message)
-              ? { search_parameters: { mode: "auto" } }
-              : { search_parameters: { mode: "off" } }
+            tools
           );
         } else {
           // No more tool calls, add final response
@@ -350,6 +319,7 @@ Current working directory: ${process.cwd()}`,
         newEntries.push(warningEntry);
       }
 
+      debug(`[LIFECYCLE] processUserMessage completed with ${newEntries.length} entries, ${toolRounds} tool rounds`);
       return newEntries;
     } catch (error: any) {
       const errorEntry: ChatEntry = {
@@ -358,6 +328,7 @@ Current working directory: ${process.cwd()}`,
         timestamp: new Date(),
       };
       this.chatHistory.push(errorEntry);
+      debug(`[LIFECYCLE] processUserMessage failed with error: ${error.message}`);
       return [userEntry, errorEntry];
     }
   }
@@ -395,6 +366,8 @@ Current working directory: ${process.cwd()}`,
   async *processUserMessageStream(
     message: string
   ): AsyncGenerator<StreamingChunk, void, unknown> {
+    debug(`[LIFECYCLE] Starting processUserMessageStream with message: ${message.substring(0, 100)}${message.length > 100 ? '...' : ''}`);
+
     // Create new abort controller for this request
     this.abortController = new AbortController();
 
@@ -422,6 +395,9 @@ Current working directory: ${process.cwd()}`,
     let lastTokenUpdate = 0;
 
     try {
+      // Get available tools once before the loop
+      const tools = await getAllGrokTools();
+
       // Agent loop - continue until no more tool calls or max rounds reached
       while (toolRounds < maxToolRounds) {
         // Check if operation was cancelled
@@ -435,14 +411,10 @@ Current working directory: ${process.cwd()}`,
         }
 
         // Stream response and accumulate
-        const tools = await getAllGrokTools();
+        debug(`[LLM] Calling grokClient.chatStream with ${this.messages.length} messages, ${tools.length} tools available`);
         const stream = this.grokClient.chatStream(
           this.messages,
-          tools,
-          undefined,
-          this.isGrokModel() && this.shouldUseSearchFor(message)
-            ? { search_parameters: { mode: "auto" } }
-            : { search_parameters: { mode: "off" } }
+          tools
         );
         let accumulatedMessage: any = {};
         let accumulatedContent = "";
@@ -500,7 +472,7 @@ Current working directory: ${process.cwd()}`,
 
             // Emit token count update
             const now = Date.now();
-            if (now - lastTokenUpdate > 250) {
+            if (now - lastTokenUpdate > 1000) {
               lastTokenUpdate = now;
               yield {
                 type: "token_count",
@@ -552,14 +524,17 @@ Current working directory: ${process.cwd()}`,
 
             const result = await this.executeTool(toolCall);
 
+            const content = result.success
+              ? result.output || "Success"
+              : result.error || "Error occurred";
+
             const toolResultEntry: ChatEntry = {
               type: "tool_result",
-              content: result.success
-                ? result.output || "Success"
-                : result.error || "Error occurred",
+              content: content,
               timestamp: new Date(),
               toolCall: toolCall,
               toolResult: result,
+              tokenCount: this.tokenCounter.countTokens(content),
             };
             this.chatHistory.push(toolResultEntry);
 
@@ -634,6 +609,8 @@ Current working directory: ${process.cwd()}`,
   }
 
   private async executeTool(toolCall: GrokToolCall): Promise<ToolResult> {
+    debug(`[TOOL] Executing tool: ${toolCall.function.name} with args: ${toolCall.function.arguments.substring(0, 200)}${toolCall.function.arguments.length > 200 ? '...' : ''}`);
+
     try {
       const args = JSON.parse(toolCall.function.arguments);
 
@@ -643,18 +620,24 @@ Current working directory: ${process.cwd()}`,
             args.start_line && args.end_line
               ? [args.start_line, args.end_line]
               : undefined;
-          return await this.textEditor.view(args.path, range);
+          const viewResult = await this.textEditor.view(args.path, range);
+          debug(`[TOOL] view_file completed: ${viewResult.success ? 'success' : 'failed - ' + viewResult.error}`);
+          return viewResult;
 
         case "create_file":
-          return await this.textEditor.create(args.path, args.content);
+          const createResult = await this.textEditor.create(args.path, args.content);
+          debug(`[TOOL] create_file completed: ${createResult.success ? 'success' : 'failed - ' + createResult.error}`);
+          return createResult;
 
         case "str_replace_editor":
-          return await this.textEditor.strReplace(
+          const replaceResult = await this.textEditor.strReplace(
             args.path,
             args.old_str,
             args.new_str,
             args.replace_all
           );
+          debug(`[TOOL] str_replace_editor completed: ${replaceResult.success ? 'success' : 'failed - ' + replaceResult.error}`);
+          return replaceResult;
 
         case "edit_file":
           if (!this.morphEditor) {
@@ -671,7 +654,9 @@ Current working directory: ${process.cwd()}`,
           );
 
         case "bash":
-          return await this.bash.execute(args.command);
+          const bashResult = await this.bash.execute(args.command);
+          debug(`[TOOL] bash completed: ${bashResult.success ? 'success' : 'failed - ' + bashResult.error}`);
+          return bashResult;
 
         case "create_todo_list":
           return await this.todoTool.createTodoList(args.todos);
@@ -680,7 +665,7 @@ Current working directory: ${process.cwd()}`,
           return await this.todoTool.updateTodoList(args.updates);
 
         case "search":
-          return await this.search.search(args.query, {
+          const searchResult = await this.search.search(args.query, {
             searchType: args.search_type,
             includePattern: args.include_pattern,
             excludePattern: args.exclude_pattern,
@@ -691,6 +676,8 @@ Current working directory: ${process.cwd()}`,
             fileTypes: args.file_types,
             includeHidden: args.include_hidden,
           });
+          debug(`[TOOL] search completed: ${searchResult.success ? 'success' : 'failed - ' + searchResult.error}`);
+          return searchResult;
 
         default:
           // Check if this is an MCP tool
@@ -704,6 +691,7 @@ Current working directory: ${process.cwd()}`,
           };
       }
     } catch (error: any) {
+      debug(`[TOOL] Tool execution failed with error: ${error.message}`);
       return {
         success: false,
         error: `Tool execution error: ${error.message}`,
@@ -712,11 +700,13 @@ Current working directory: ${process.cwd()}`,
   }
 
   private async executeMCPTool(toolCall: GrokToolCall): Promise<ToolResult> {
+    debug(`[MCP] Calling MCP tool: ${toolCall.function.name}`);
     try {
       const args = JSON.parse(toolCall.function.arguments);
       const mcpManager = getMCPManager();
 
       const result = await mcpManager.callTool(toolCall.function.name, args);
+      debug(`[MCP] Tool ${toolCall.function.name} completed: isError=${result.isError}`);
 
       if (result.isError) {
         return {
@@ -742,6 +732,7 @@ Current working directory: ${process.cwd()}`,
         output: output || "Success",
       };
     } catch (error: any) {
+      debug(`[MCP] Tool ${toolCall.function.name} failed: ${error.message}`);
       return {
         success: false,
         error: `MCP tool execution error: ${error.message}`,

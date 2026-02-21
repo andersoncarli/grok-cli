@@ -173,6 +173,9 @@ const MemoizedChatEntry = React.memo(
                 {" "}
                 {filePath ? `${actionName}(${filePath})` : actionName}
               </Text>
+              {entry.tokenCount !== undefined && (
+                <Text color="gray"> ({entry.tokenCount} tokens)</Text>
+              )}
             </Box>
             <Box marginLeft={2} flexDirection="column">
               {isExecuting ? (

@@ -3,6 +3,10 @@ import { ToolResult } from "../types/index.js";
 import { ConfirmationService } from "../utils/confirmation-service.js";
 import fs from "fs-extra";
 import * as path from "path";
+import { createRequire } from "module";
+
+const require = createRequire(import.meta.url);
+const debug = require("debug")("grok-cli:search");
 
 export interface SearchResult {
   file: string;
@@ -50,13 +54,15 @@ export class SearchTool {
       includeHidden?: boolean;
     } = {}
   ): Promise<ToolResult> {
+    const searchType = options.searchType || "both";
+    debug(`[SEARCH] query="${query}" type=${searchType} cwd=${this.currentDirectory}`);
     try {
-      const searchType = options.searchType || "both";
       const results: UnifiedSearchResult[] = [];
 
       // Search for text content if requested
       if (searchType === "text" || searchType === "both") {
         const textResults = await this.executeRipgrep(query, options);
+        debug(`[SEARCH] ripgrep found ${textResults.length} matches`);
         results.push(
           ...textResults.map((r) => ({
             type: "text" as const,
@@ -72,6 +78,7 @@ export class SearchTool {
       // Search for files if requested
       if (searchType === "files" || searchType === "both") {
         const fileResults = await this.findFilesByPattern(query, options);
+        debug(`[SEARCH] file pattern found ${fileResults.length} files`);
         results.push(
           ...fileResults.map((r) => ({
             type: "file" as const,
@@ -81,6 +88,7 @@ export class SearchTool {
         );
       }
 
+      debug(`[SEARCH] total results: ${results.length}`);
       if (results.length === 0) {
         return {
           success: true,
@@ -99,6 +107,7 @@ export class SearchTool {
         output: formattedOutput,
       };
     } catch (error: any) {
+      debug(`[SEARCH] failed: ${error.message}`);
       return {
         success: false,
         error: `Search error: ${error.message}`,

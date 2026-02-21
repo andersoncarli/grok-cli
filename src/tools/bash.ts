@@ -2,8 +2,11 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { ToolResult } from '../types/index.js';
 import { ConfirmationService } from '../utils/confirmation-service.js';
+import { createRequire } from 'module';
 
 const execAsync = promisify(exec);
+const require = createRequire(import.meta.url);
+const debug = require("debug")("grok-cli:bash");
 
 export class BashTool {
   private currentDirectory: string = process.cwd();
@@ -11,11 +14,12 @@ export class BashTool {
 
 
   async execute(command: string, timeout: number = 30000): Promise<ToolResult> {
+    debug(`[EXEC] Running command: ${command.substring(0, 200)}${command.length > 200 ? '...' : ''} (cwd: ${this.currentDirectory})`);
     try {
       // Check if user has already accepted bash commands for this session
       const sessionFlags = this.confirmationService.getSessionFlags();
       if (!sessionFlags.bashCommands && !sessionFlags.allOperations) {
-        // Request confirmation showing the command
+        debug(`[EXEC] Requesting confirmation for command`);
         const confirmationResult = await this.confirmationService.requestConfirmation({
           operation: 'Run bash command',
           filename: command,
@@ -24,6 +28,7 @@ export class BashTool {
         }, 'bash');
 
         if (!confirmationResult.confirmed) {
+          debug(`[EXEC] Command cancelled by user`);
           return {
             success: false,
             error: confirmationResult.feedback || 'Command execution cancelled by user'
@@ -36,11 +41,13 @@ export class BashTool {
         try {
           process.chdir(newDir);
           this.currentDirectory = process.cwd();
+          debug(`[EXEC] Directory changed to: ${this.currentDirectory}`);
           return {
             success: true,
             output: `Changed directory to: ${this.currentDirectory}`
           };
         } catch (error: any) {
+          debug(`[EXEC] cd failed: ${error.message}`);
           return {
             success: false,
             error: `Cannot change directory: ${error.message}`
@@ -55,12 +62,13 @@ export class BashTool {
       });
 
       const output = stdout + (stderr ? `\nSTDERR: ${stderr}` : '');
-      
+      debug(`[EXEC] Command succeeded, output length: ${output.length} bytes`);
       return {
         success: true,
         output: output.trim() || 'Command executed successfully (no output)'
       };
     } catch (error: any) {
+      debug(`[EXEC] Command failed: ${error.message}`);
       return {
         success: false,
         error: `Command failed: ${error.message}`
