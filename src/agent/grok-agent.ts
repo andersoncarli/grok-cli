@@ -190,7 +190,11 @@ Current working directory: ${process.cwd()}`,
       debug(`[LLM] Calling grokClient.chat with ${this.messages.length} messages, ${tools.length} tools available`);
       let currentResponse = await this.grokClient.chat(
         this.messages,
-        tools
+        tools,
+        // undefined,
+        // this.isGrokModel() && this.shouldUseSearchFor(message)
+        //   ? { search_parameters: { mode: "auto" } }
+        //   : { search_parameters: { mode: "off" } }
       );
       debug(`[LLM] grokClient.chat completed, response has ${currentResponse.choices[0]?.message?.tool_calls?.length || 0} tool calls`);
 
@@ -287,7 +291,15 @@ Current working directory: ${process.cwd()}`,
           debug(`[LLM] Calling grokClient.chat for round ${toolRounds + 1} with ${this.messages.length} messages after tool execution`);
           currentResponse = await this.grokClient.chat(
             this.messages,
+<<<<<<< HEAD
             tools
+=======
+            tools,
+            // undefined,
+            // this.isGrokModel() && this.shouldUseSearchFor(message)
+            //   ? { search_parameters: { mode: "auto" } }
+            //   : { search_parameters: { mode: "off" } }
+>>>>>>> 0e73834538d01889db417262e4ea57b9109f026d
           );
         } else {
           // No more tool calls, add final response
@@ -414,7 +426,15 @@ Current working directory: ${process.cwd()}`,
         debug(`[LLM] Calling grokClient.chatStream with ${this.messages.length} messages, ${tools.length} tools available`);
         const stream = this.grokClient.chatStream(
           this.messages,
+<<<<<<< HEAD
           tools
+=======
+          tools,
+          // undefined,
+          // this.isGrokModel() && this.shouldUseSearchFor(message)
+          //   ? { search_parameters: { mode: "auto" } }
+          //   : { search_parameters: { mode: "off" } }
+>>>>>>> 0e73834538d01889db417262e4ea57b9109f026d
         );
         let accumulatedMessage: any = {};
         let accumulatedContent = "";
